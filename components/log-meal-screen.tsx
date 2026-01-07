@@ -1,86 +1,101 @@
 "use client"
 
 import type React from "react"
-import { useState, useRef } from "react"
+import { useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Card } from "@/components/ui/card"
 import { Camera, ArrowLeft, Upload } from "lucide-react"
 
-export type MealType = "breakfast" | "lunch" | "dinner" | "snack"
-
 interface LogMealScreenProps {
-  onSubmit: (meal: string, mealType: MealType, photo?: File) => void
+  onSubmit: (meal: string, photo?: File) => void
   onBack: () => void
 }
 
 export function LogMealScreen({ onSubmit, onBack }: LogMealScreenProps) {
   const [mealDescription, setMealDescription] = useState("")
-  const [mealType, setMealType] = useState<MealType>("lunch")
   const [photo, setPhoto] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+  const galleryInputRef = useRef<HTMLInputElement>(null)
+
+  const setFile = (file?: File) => {
     if (!file) return
     setPhoto(file)
+
     const reader = new FileReader()
     reader.onloadend = () => setPhotoPreview(reader.result as string)
     reader.readAsDataURL(file)
   }
 
+  const handleCameraChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    setFile(file)
+    e.target.value = ""
+  }
+
+  const handleGalleryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    setFile(file)
+    e.target.value = ""
+  }
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (mealDescription.trim() || photo) {
-      onSubmit(mealDescription, mealType, photo || undefined)
+      onSubmit(mealDescription, photo || undefined)
     }
   }
 
   return (
     <div className="flex min-h-screen flex-col p-6">
       <header className="mb-8 flex items-center gap-4 pt-8">
-        <button onClick={onBack} className="rounded-full p-2 hover:bg-muted/50 transition-colors" aria-label="Go back">
+        <button
+          onClick={onBack}
+          className="rounded-full p-2 hover:bg-muted/50 transition-colors"
+          aria-label="Go back"
+        >
           <ArrowLeft className="h-5 w-5 text-foreground" />
         </button>
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Log Meal</h1>
-          <p className="text-sm text-muted-foreground">Take a photo of your meal</p>
+          <p className="text-sm text-muted-foreground">Take a photo or upload from your library</p>
         </div>
       </header>
 
       <main className="flex flex-1 flex-col gap-6">
         <form onSubmit={handleSubmit} className="flex flex-1 flex-col gap-6">
           <Card className="p-6">
-            <label className="mb-2 block text-sm font-medium text-foreground">Meal type</label>
-            <select
-              value={mealType}
-              onChange={(e) => setMealType(e.target.value as MealType)}
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-            >
-              <option value="breakfast">Breakfast</option>
-              <option value="lunch">Lunch</option>
-              <option value="dinner">Dinner</option>
-              <option value="snack">Snack</option>
-            </select>
-          </Card>
-
-          <Card className="p-6">
             <label className="mb-4 block text-sm font-medium text-foreground">Photo</label>
 
+            {/* Camera-only input */}
             <input
-              ref={fileInputRef}
+              ref={cameraInputRef}
               type="file"
               accept="image/*"
               capture="environment"
-              onChange={handlePhotoChange}
+              onChange={handleCameraChange}
+              className="hidden"
+            />
+
+            {/* Gallery picker input */}
+            <input
+              ref={galleryInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleGalleryChange}
               className="hidden"
             />
 
             {photoPreview ? (
               <div className="space-y-4">
                 <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-muted">
-                  <img src={photoPreview} alt="Meal preview" className="h-full w-full object-cover" />
+                  <img
+                    src={photoPreview}
+                    alt="Meal preview"
+                    className="h-full w-full object-cover"
+                  />
                 </div>
                 <Button
                   type="button"
@@ -97,11 +112,21 @@ export function LogMealScreen({ onSubmit, onBack }: LogMealScreenProps) {
               </div>
             ) : (
               <div className="flex gap-3">
-                <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} className="flex-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => cameraInputRef.current?.click()}
+                  className="flex-1"
+                >
                   <Camera className="mr-2 h-4 w-4" />
                   Take photo
                 </Button>
-                <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} className="flex-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => galleryInputRef.current?.click()}
+                  className="flex-1"
+                >
                   <Upload className="mr-2 h-4 w-4" />
                   Upload
                 </Button>
@@ -115,7 +140,7 @@ export function LogMealScreen({ onSubmit, onBack }: LogMealScreenProps) {
             </label>
             <Textarea
               id="meal-description"
-              placeholder="Optional hint (image is primary). e.g., chicken schnitzel + salad"
+              placeholder="e.g., 2 eggs and toast"
               value={mealDescription}
               onChange={(e) => setMealDescription(e.target.value)}
               className="min-h-32 resize-none"
@@ -130,4 +155,5 @@ export function LogMealScreen({ onSubmit, onBack }: LogMealScreenProps) {
     </div>
   )
 }
+
 
