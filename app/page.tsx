@@ -3,11 +3,14 @@
 import { useEffect, useState } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { HomeScreen } from "@/components/home-screen"
-import { LogMealScreen, type MealType } from "@/components/log-meal-screen"
+import { LogMealScreen } from "@/components/log-meal-screen"
 import { ResultsScreen } from "@/components/results-screen"
 import { getOrCreateSessionId } from "@/lib/utils"
 
 export type Screen = "home" | "log" | "results"
+
+// Keep this here so you’re not dependent on component exports
+export type MealType = "breakfast" | "lunch" | "dinner"
 
 export type MealResult = {
   protein: number
@@ -29,6 +32,19 @@ export default function Page() {
 
   const getTodayDateString = () => new Date().toISOString().slice(0, 10)
 
+  const isFileLike = (x: unknown): x is File => {
+    // Mobile Safari / some Android webviews can be weird with instanceof File
+    // This checks shape instead.
+    if (!x || typeof x !== "object") return false
+    const anyX = x as any
+    return (
+      typeof anyX.name === "string" &&
+      typeof anyX.type === "string" &&
+      typeof anyX.size === "number" &&
+      typeof anyX.arrayBuffer === "function"
+    )
+  }
+
   const loadTodayProtein = async () => {
     const sessionId = getOrCreateSessionId()
     const today = getTodayDateString()
@@ -45,8 +61,7 @@ export default function Page() {
       return
     }
 
-    const total = data?.protein_total ?? 0
-    setDailyProtein(Number(total))
+    setDailyProtein(Number(data?.protein_total ?? 0))
   }
 
   useEffect(() => {
@@ -55,27 +70,24 @@ export default function Page() {
   }, [])
 
   const uploadMealPhoto = async (file: File) => {
-    if (!file) throw new Error("No file provided")
-
     const sessionId = getOrCreateSessionId()
 
-    const filename = (file.name && file.name.trim()) ? file.name.trim() : "photo.jpg"
-    const ext = filename.includes(".") ? (filename.split(".").pop() || "jpg").toLowerCase() : "jpg"
+    const filename = file.name?.trim() ? file.name.trim() : "photo.jpg"
+    const ext = filename.includes(".")
+      ? (filename.split(".").pop() || "jpg").toLowerCase()
+      : "jpg"
+
     const path = `${sessionId}/${crypto.randomUUID()}.${ext}`
 
-    const { data, error } = await supabase.storage
-      .from("meal_photos")
-      .upload(path, file, {
-        contentType: file.type || "image/jpeg",
-        upsert: false,
-      })
+    const { error } = await supabase.storage.from("meal_photos").upload(path, file, {
+      contentType: file.type || "image/jpeg",
+      upsert: false,
+    })
 
     if (error) throw error
 
-    // For UI preview only (this may not be publicly viewable; that’s OK)
     const { data: pub } = supabase.storage.from("meal_photos").getPublicUrl(path)
-
-    return { path, publicUrl: pub.publicUrl, uploadData: data }
+    return { path, publicUrl: pub.publicUrl }
   }
 
   const handleLogMeal = async (mealText: string, mealType: MealType, photo?: File) => {
@@ -86,6 +98,15 @@ export default function Page() {
     try {
       const sessionId = getOrCreateSessionId()
       const date = getTodayDateString()
+
+      console.log("handleLogMeal args:", {
+        mealType,
+        hasPhoto: !!photo,
+        photoName: (photo as any)?.name,
+        photoType: (photo as any)?.type,
+        photoSize: (photo as any)?.size,
+        mealTextLen: mealText?.length ?? 0,
+      })
 
       if (!photo) {
         throw new Error("Please add a photo (image is required for image-first analysis).")
@@ -101,7 +122,7 @@ export default function Page() {
             date,
             meal_text: mealText || "",
             meal_type: mealType,
-            photo_path: uploaded.path, // IMPORTANT: send path, not URL
+            photo_path: uploaded.path, // keep as path (matches your comment)
           },
         }
       )
@@ -137,7 +158,6 @@ export default function Page() {
   }
 
   const handleAddToday = async () => {
-    // DB is already updated by the function
     setMealResult(null)
     setCurrentScreen("home")
   }
@@ -157,19 +177,32 @@ export default function Page() {
 
         {currentScreen === "log" && (
           <LogMealScreen
-            onSubmit={handleLogMeal}
+            onSubmit={(mealText: string, arg2?: any, arg3?: any) => {
+              const defaultType: MealType = "dinner"
+
+              // Pattern A (your current component): onSubmit(mealText, photo)
+              if (isFileLike(arg2)) {
+                return handleLogMeal(mealText, defaultType, arg2)
+              }
+
+              // Pattern B (future): onSubmit(mealText, mealType, photo)
+              if (typeof arg2 === "string") {
+                const mt = (arg2 as MealType) || defaultType
+                const file = isFileLike(arg3) ? (arg3 as File) : undefined
+                return handleLogMeal(mealText, mt, file)
+              }
+
+              // No photo passed
+              return handleLogMeal(mealText, defaultType, undefined)
+            }}
             onBack={() => setCurrentScreen("home")}
           />
         )}
 
         {currentScreen === "results" && (
-          <div className="p-4 space-y-4">
+          <div className="space-y-4 p-4">
             {mealResult?.photoUrl && (
-              <img
-                src={mealResult.photoUrl}
-                alt="Uploaded meal"
-                className="w-full rounded-lg"
-              />
+              <img src={mealResult.photoUrl} alt="Uploaded meal" className="w-full rounded-lg" />
             )}
 
             <ResultsScreen
