@@ -32,6 +32,10 @@ export default function Page() {
   // TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED
   // Shows which session_id this device is using (important for mobile debugging)
   const sessionId = getOrCreateSessionId()
+  // TEMP DEBUG — REMOVE AFTER CONFIRMED
+  const todayMel = getTodayDateString(APP_TIMEZONE)
+  const nowMel = new Date().toLocaleString("en-AU", { timeZone: APP_TIMEZONE })
+  const nowUtc = new Date().toISOString()
 
   const [currentScreen, setCurrentScreen] = useState<Screen>("home")
   const [dailyProtein, setDailyProtein] = useState<number>(0)
@@ -171,8 +175,14 @@ export default function Page() {
   return (
     <div className="min-h-screen bg-background">
       <div className="mx-auto max-w-md">
-        {/* TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED */}
-        <div className="p-2 text-xs text-muted-foreground break-all">session_id: {sessionId}</div>
+                {/* TEMP DEBUG — REMOVE AFTER CONFIRMED */}
+        <div className="p-2 text-xs text-muted-foreground break-all space-y-1">
+          <div>session_id: {sessionId}</div>
+          <div>todayMel (YYYY-MM-DD): {todayMel}</div>
+          <div>nowMel: {nowMel}</div>
+          <div>nowUtc: {nowUtc}</div>
+        </div>
+
 
         {currentScreen === "home" && (
           <HomeScreen
