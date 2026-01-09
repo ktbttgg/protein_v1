@@ -16,7 +16,8 @@ import { getOrCreateSessionId, getTodayDateString, APP_TIMEZONE } from "@/lib/ut
 export type Screen = "home" | "log" | "results"
 
 // Keep this here so you’re not dependent on component exports
-export type MealType = "breakfast" | "lunch" | "dinner"
+export type MealType = "breakfast" | "lunch" | "dinner" | "snack"
+
 
 export type MealResult = {
   protein: number
@@ -26,16 +27,43 @@ export type MealResult = {
   mealType?: MealType
   photoPath?: string
   photoUrl?: string
+  coaching?: Coaching
+  
+}
+export type CoachingFocus = "protein" | "balance" | "snack" | "portion"
+
+export type CoachingScenario =
+  | "UNKNOWN_MEAL"
+  | "LOW_PROTEIN_BREAKFAST"
+  | "LOW_PROTEIN_LUNCH"
+  | "LOW_PROTEIN_DINNER"
+  | "LOW_PROTEIN_SNACK"
+  | "MEDIUM_PROTEIN"
+  | "HIGH_PROTEIN"
+
+export type Coaching = {
+  scenario_id: CoachingScenario
+  focus: CoachingFocus
+  five_min_fix: string
+  next_time_tweak: string
+  reason: string
 }
 
 export default function Page() {
   // TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED
   // Shows which session_id this device is using (important for mobile debugging)
   const sessionId = getOrCreateSessionId()
+  const [mounted, setMounted] = useState(false);
+
+useEffect(() => {
+  setMounted(true);
+}, []);
+
   // TEMP DEBUG — REMOVE AFTER CONFIRMED
   const todayMel = getTodayDateString(APP_TIMEZONE)
   const nowMel = new Date().toLocaleString("en-AU", { timeZone: APP_TIMEZONE })
   const nowUtc = new Date().toISOString()
+  
 
   const [currentScreen, setCurrentScreen] = useState<Screen>("home")
   const [dailyProtein, setDailyProtein] = useState<number>(0)
@@ -148,6 +176,7 @@ export default function Page() {
         mealType,
         photoPath: uploaded.path,
         photoUrl: uploaded.publicUrl,
+        coaching: data.coaching ?? undefined,
       })
 
       setDailyProtein(Number(data.daily?.protein_total ?? dailyProtein))
@@ -175,13 +204,16 @@ export default function Page() {
   return (
     <div className="min-h-screen bg-background">
       <div className="mx-auto max-w-md">
-                {/* TEMP DEBUG — REMOVE AFTER CONFIRMED */}
-        <div className="p-2 text-xs text-muted-foreground break-all space-y-1">
-          <div>session_id: {sessionId}</div>
-          <div>todayMel (YYYY-MM-DD): {todayMel}</div>
-          <div>nowMel: {nowMel}</div>
-          <div>nowUtc: {nowUtc}</div>
-        </div>
+                {/* TEMP DEBUG — REMOVE AFTER CONFIRMED */} 
+      {mounted && (
+  <div className="p-2 text-xs text-muted-foreground break-all space-y-1">
+    <div>session_id: {sessionId}</div>
+    <div>todayMel (YYYY-MM-DD): {todayMel}</div>
+    <div>nowMel: {nowMel}</div>
+    <div>nowUtc: {nowUtc}</div>
+  </div>
+)}
+
 
 
         {currentScreen === "home" && (

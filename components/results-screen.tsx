@@ -13,7 +13,12 @@ interface ResultsScreenProps {
 }
 
 export function ResultsScreen({ result, onAddToday, onEditMeal, isLoading }: ResultsScreenProps) {
-  if (isLoading || !result) {
+  console.log("[ResultsScreen] render", {
+  hasResult: !!result,
+  hasCoaching: !!(result as any)?.coaching,
+  coachingKeys: (result as any)?.coaching ? Object.keys((result as any).coaching) : null,
+})
+if (isLoading || !result) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center p-6">
         <div className="flex flex-col items-center gap-4">
@@ -67,6 +72,29 @@ export function ResultsScreen({ result, onAddToday, onEditMeal, isLoading }: Res
           <h2 className="mb-2 text-sm font-medium text-foreground">Analysis</h2>
           <p className="text-sm leading-relaxed text-muted-foreground">{result.explanation}</p>
         </Card>
+
+        {result.coaching && (
+          <Card className="p-6">
+            <h2 className="mb-2 text-sm font-medium text-foreground">Coaching</h2>
+
+            <div className="space-y-4">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground">5-minute fix</div>
+                <p className="text-sm leading-relaxed text-foreground">{result.coaching.five_min_fix}</p>
+              </div>
+
+              <div>
+                <div className="text-xs font-medium text-muted-foreground">Next time</div>
+                <p className="text-sm leading-relaxed text-foreground">{result.coaching.next_time_tweak}</p>
+              </div>
+
+              <div>
+                <div className="text-xs font-medium text-muted-foreground">Why</div>
+                <p className="text-sm leading-relaxed text-muted-foreground">{result.coaching.reason}</p>
+              </div>
+            </div>
+          </Card>
+        )}
 
         <Card className="p-6">
           <h2 className="mb-2 text-sm font-medium text-foreground">Meal</h2>
