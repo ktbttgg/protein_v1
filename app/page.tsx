@@ -11,7 +11,7 @@ import { supabase } from "@/lib/supabaseClient"
 import { HomeScreen } from "@/components/home-screen"
 import { LogMealScreen } from "@/components/log-meal-screen"
 import { ResultsScreen } from "@/components/results-screen"
-import { getOrCreateSessionId, APP_TIMEZONE } from "@/lib/utils"
+import { getOrCreateSessionId, getTodayDateString, APP_TIMEZONE } from "@/lib/utils"
 
 export type Screen = "home" | "log" | "results"
 
@@ -32,22 +32,13 @@ export default function Page() {
   // TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED
   // Shows which session_id this device is using (important for mobile debugging)
   const sessionId = getOrCreateSessionId()
+
   const [currentScreen, setCurrentScreen] = useState<Screen>("home")
   const [dailyProtein, setDailyProtein] = useState<number>(0)
   const [mealResult, setMealResult] = useState<MealResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
   const dailyGoal = 120
-
-  /**
-   * IMPORTANT:
-   * We must compute "today" in Melbourne time, not UTC.
-   * Using toISOString().slice(0,10) returns the UTC date and causes the bug.
-   *
-   * en-CA locale yields YYYY-MM-DD which matches your DB "date" format.
-   */
-  const getTodayDateString = () =>
-    new Date().toLocaleDateString("en-CA", { timeZone: APP_TIMEZONE })
 
   const isFileLike = (x: unknown): x is File => {
     // Mobile Safari / some Android webviews can be weird with instanceof File
@@ -63,8 +54,7 @@ export default function Page() {
   }
 
   const loadTodayProtein = async () => {
-    const sessionId = getOrCreateSessionId()
-    const today = getTodayDateString()
+    const today = getTodayDateString(APP_TIMEZONE)
 
     const { data, error } = await supabase
       .from("daily_totals")
@@ -87,8 +77,6 @@ export default function Page() {
   }, [])
 
   const uploadMealPhoto = async (file: File) => {
-    const sessionId = getOrCreateSessionId()
-
     const filename = file.name?.trim() ? file.name.trim() : "photo.jpg"
     const ext = filename.includes(".")
       ? (filename.split(".").pop() || "jpg").toLowerCase()
@@ -113,8 +101,7 @@ export default function Page() {
     setMealResult(null)
 
     try {
-      const sessionId = getOrCreateSessionId()
-      const date = getTodayDateString()
+      const date = getTodayDateString(APP_TIMEZONE)
 
       console.log("handleLogMeal args:", {
         mealType,
@@ -125,6 +112,7 @@ export default function Page() {
         mealTextLen: mealText?.length ?? 0,
         date,
         timezone: APP_TIMEZONE,
+        sessionId,
       })
 
       if (!photo) {
@@ -133,18 +121,15 @@ export default function Page() {
 
       const uploaded = await uploadMealPhoto(photo)
 
-      const { data, error } = await supabase.functions.invoke(
-        "analyze_meal_protein_and_update_day",
-        {
-          body: {
-            session_id: sessionId,
-            date, // now Melbourne-safe
-            meal_text: mealText || "",
-            meal_type: mealType,
-            photo_path: uploaded.path, // keep as path (matches your comment)
-          },
-        }
-      )
+      const { data, error } = await supabase.functions.invoke("analyze_meal_protein_and_update_day", {
+        body: {
+          session_id: sessionId,
+          date, // Melbourne-safe, canonical
+          meal_text: mealText || "",
+          meal_type: mealType,
+          photo_path: uploaded.path,
+        },
+      })
 
       console.log("FUNCTION RESULT", { data, error })
 
@@ -184,33 +169,30 @@ export default function Page() {
   const handleEditMeal = () => setCurrentScreen("log")
 
   return (
-  <div className="min-h-screen bg-background">
-    <div className="mx-auto max-w-md">
-      {/* TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED */}
-      <div className="p-2 text-xs text-muted-foreground break-all">
-        session_id: {sessionId}
-      </div>
+    <div className="min-h-screen bg-background">
+      <div className="mx-auto max-w-md">
+        {/* TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED */}
+        <div className="p-2 text-xs text-muted-foreground break-all">session_id: {sessionId}</div>
 
-      {currentScreen === "home" && (
-        <HomeScreen
-          currentProtein={dailyProtein}
-          goalProtein={dailyGoal}
-          onLogMeal={() => setCurrentScreen("log")}
-        />
-      )}
-
+        {currentScreen === "home" && (
+          <HomeScreen
+            currentProtein={dailyProtein}
+            goalProtein={dailyGoal}
+            onLogMeal={() => setCurrentScreen("log")}
+          />
+        )}
 
         {currentScreen === "log" && (
           <LogMealScreen
             onSubmit={(mealText: string, arg2?: any, arg3?: any) => {
               const defaultType: MealType = "dinner"
 
-              // Pattern A (your current component): onSubmit(mealText, photo)
+              // Pattern A: onSubmit(mealText, photo)
               if (isFileLike(arg2)) {
                 return handleLogMeal(mealText, defaultType, arg2)
               }
 
-              // Pattern B (future): onSubmit(mealText, mealType, photo)
+              // Pattern B: onSubmit(mealText, mealType, photo)
               if (typeof arg2 === "string") {
                 const mt = (arg2 as MealType) || defaultType
                 const file = isFileLike(arg3) ? (arg3 as File) : undefined

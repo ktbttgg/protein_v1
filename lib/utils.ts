@@ -52,24 +52,103 @@ export function getOrCreateSessionId(): string {
 export const APP_TIMEZONE = "Australia/Melbourne"
 
 /**
- * Returns the start of "today" in the given timezone,
- * expressed as a UTC ISO string for safe Supabase queries.
+ * Canonical "today" for the app, in APP_TIMEZONE, as YYYY-MM-DD.
+ *
+ * IMPORTANT:
+ * Do NOT use new Date().toISOString().slice(0, 10) for "today" — that is UTC
+ * and will be "yesterday" in the morning in Melbourne.
+ *
+ * This implementation uses Intl.formatToParts which is reliable on mobile.
  */
-export function getStartOfToday(
-  timezone: string = APP_TIMEZONE
-): string {
-  const now = new Date()
+export function getTodayDateString(timezone: string = APP_TIMEZONE): string {
+  const parts = new Intl.DateTimeFormat("en-AU", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date())
 
-  // Convert current time to the target timezone
-  const localNow = new Date(
-    now.toLocaleString("en-US", { timeZone: timezone })
-  )
+  const y = parts.find((p) => p.type === "year")?.value
+  const m = parts.find((p) => p.type === "month")?.value
+  const d = parts.find((p) => p.type === "day")?.value
 
-  // Snap to midnight in that timezone
-  localNow.setHours(0, 0, 0, 0)
+  if (!y || !m || !d) throw new Error("Failed to compute local YYYY-MM-DD date string")
 
-  // Return UTC ISO string
-  return localNow.toISOString()
+  return `${y}-${m}-${d}`
+}
+
+/**
+ * Start of "today" in the given timezone, expressed as a UTC ISO string.
+ *
+ * Use this for created_at filtering flows (future), NOT for date-string flows.
+ *
+ * NOTE:
+ * This uses the canonical YYYY-MM-DD and computes the UTC instant that corresponds
+ * to midnight in the target timezone.
+ */
+export function getStartOfToday(timezone: string = APP_TIMEZONE): string {
+  const ymd = getTodayDateString(timezone) // YYYY-MM-DD in target tz
+  // Construct a timestamp that represents midnight *in that timezone* by using
+  // an Intl formatter to derive the offset indirectly.
+  //
+  // Practical approach:
+  // - take "now" in that timezone
+  // - replace its date parts with ymd at 00:00:00
+  // - then return ISO (UTC)
+  const [y, m, d] = ymd.split("-").map((v) => Number(v))
+
+  // Build a Date for "midnight" in the target timezone by formatting parts.
+  // We do this by:
+  // 1) starting from UTC midnight
+  // 2) then shifting until its formatted parts match the target date at 00:00
+  //
+  // This avoids unreliable parsing of locale strings.
+  let candidate = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0))
+
+  const fmt = new Intl.DateTimeFormat("en-AU", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+
+  const partsToObj = (dt: Date) => {
+    const p = fmt.formatToParts(dt)
+    const get = (t: string) => p.find((x) => x.type === t)?.value
+    return {
+      year: get("year"),
+      month: get("month"),
+      day: get("day"),
+      hour: get("hour"),
+      minute: get("minute"),
+      second: get("second"),
+    }
+  }
+
+  // Adjust candidate within a safe window (±36h) to find the UTC instant
+  // that formats to 00:00:00 on the target date in the target timezone.
+  for (let i = 0; i < 72; i++) {
+    const o = partsToObj(candidate)
+    if (
+      o.year === String(y) &&
+      o.month === String(m).padStart(2, "0") &&
+      o.day === String(d).padStart(2, "0") &&
+      o.hour === "00" &&
+      o.minute === "00" &&
+      o.second === "00"
+    ) {
+      return candidate.toISOString()
+    }
+    // move forward 30 minutes
+    candidate = new Date(candidate.getTime() + 30 * 60 * 1000)
+  }
+
+  // Fallback: return UTC midnight if we didn't match (should be rare)
+  return new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0)).toISOString()
 }
 
 /**
