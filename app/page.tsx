@@ -1,11 +1,17 @@
 "use client"
+/**
+ * NOTE:
+ * This screen uses date-string based "day" logic (daily_totals.date).
+ * Do NOT use getStartOfToday() or created_at filters here.
+ * Always use getTodayDateString() for "today".
+ */
 
 import { useEffect, useState } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { HomeScreen } from "@/components/home-screen"
 import { LogMealScreen } from "@/components/log-meal-screen"
 import { ResultsScreen } from "@/components/results-screen"
-import { getOrCreateSessionId } from "@/lib/utils"
+import { getOrCreateSessionId, APP_TIMEZONE } from "@/lib/utils"
 
 export type Screen = "home" | "log" | "results"
 
@@ -23,6 +29,9 @@ export type MealResult = {
 }
 
 export default function Page() {
+  // TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED
+  // Shows which session_id this device is using (important for mobile debugging)
+  const sessionId = getOrCreateSessionId()
   const [currentScreen, setCurrentScreen] = useState<Screen>("home")
   const [dailyProtein, setDailyProtein] = useState<number>(0)
   const [mealResult, setMealResult] = useState<MealResult | null>(null)
@@ -30,7 +39,15 @@ export default function Page() {
 
   const dailyGoal = 120
 
-  const getTodayDateString = () => new Date().toISOString().slice(0, 10)
+  /**
+   * IMPORTANT:
+   * We must compute "today" in Melbourne time, not UTC.
+   * Using toISOString().slice(0,10) returns the UTC date and causes the bug.
+   *
+   * en-CA locale yields YYYY-MM-DD which matches your DB "date" format.
+   */
+  const getTodayDateString = () =>
+    new Date().toLocaleDateString("en-CA", { timeZone: APP_TIMEZONE })
 
   const isFileLike = (x: unknown): x is File => {
     // Mobile Safari / some Android webviews can be weird with instanceof File
@@ -106,6 +123,8 @@ export default function Page() {
         photoType: (photo as any)?.type,
         photoSize: (photo as any)?.size,
         mealTextLen: mealText?.length ?? 0,
+        date,
+        timezone: APP_TIMEZONE,
       })
 
       if (!photo) {
@@ -119,7 +138,7 @@ export default function Page() {
         {
           body: {
             session_id: sessionId,
-            date,
+            date, // now Melbourne-safe
             meal_text: mealText || "",
             meal_type: mealType,
             photo_path: uploaded.path, // keep as path (matches your comment)
@@ -165,15 +184,21 @@ export default function Page() {
   const handleEditMeal = () => setCurrentScreen("log")
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="mx-auto max-w-md">
-        {currentScreen === "home" && (
-          <HomeScreen
-            currentProtein={dailyProtein}
-            goalProtein={dailyGoal}
-            onLogMeal={() => setCurrentScreen("log")}
-          />
-        )}
+  <div className="min-h-screen bg-background">
+    <div className="mx-auto max-w-md">
+      {/* TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED */}
+      <div className="p-2 text-xs text-muted-foreground break-all">
+        session_id: {sessionId}
+      </div>
+
+      {currentScreen === "home" && (
+        <HomeScreen
+          currentProtein={dailyProtein}
+          goalProtein={dailyGoal}
+          onLogMeal={() => setCurrentScreen("log")}
+        />
+      )}
+
 
         {currentScreen === "log" && (
           <LogMealScreen
