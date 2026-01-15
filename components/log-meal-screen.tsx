@@ -7,16 +7,18 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card } from "@/components/ui/card"
 import { Camera, ArrowLeft, Upload } from "lucide-react"
 
+type MealType = "breakfast" | "lunch" | "dinner" | "snack"
 interface LogMealScreenProps {
-  onSubmit: (meal: string, photo?: File) => void
+  onSubmit: (meal: string, mealType: MealType, photo?: File) => void
   onBack: () => void
 }
+
 
 export function LogMealScreen({ onSubmit, onBack }: LogMealScreenProps) {
   const [mealDescription, setMealDescription] = useState("")
   const [photo, setPhoto] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
-
+  const [mealType, setMealType] = useState<MealType>("lunch")
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const galleryInputRef = useRef<HTMLInputElement>(null)
 
@@ -44,7 +46,7 @@ export function LogMealScreen({ onSubmit, onBack }: LogMealScreenProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (mealDescription.trim() || photo) {
-      onSubmit(mealDescription, photo || undefined)
+      onSubmit(mealDescription, mealType, photo || undefined)
     }
   }
 
@@ -63,6 +65,33 @@ export function LogMealScreen({ onSubmit, onBack }: LogMealScreenProps) {
           <p className="text-sm text-muted-foreground">Take a photo or upload from your library</p>
         </div>
       </header>
+      <div className="mb-2">
+  <div className="text-sm font-medium text-foreground mb-2">What meal is this?</div>
+  <div className="grid grid-cols-4 gap-2">
+    {(
+      [
+        { key: "breakfast", label: "Breakfast" },
+        { key: "lunch", label: "Lunch" },
+        { key: "dinner", label: "Dinner" },
+        { key: "snack", label: "Snack" },
+      ] as const
+    ).map((item) => {
+      const active = mealType === item.key
+      return (
+        <Button
+          key={item.key}
+          type="button"
+          variant={active ? "default" : "outline"}
+          onClick={() => setMealType(item.key)}
+          className="w-full"
+        >
+          {item.label}
+        </Button>
+      )
+    })}
+  </div>
+</div>
+
 
       <main className="flex flex-1 flex-col gap-6">
         <form onSubmit={handleSubmit} className="flex flex-1 flex-col gap-6">
