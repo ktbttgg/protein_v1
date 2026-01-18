@@ -24,7 +24,7 @@ export type MealResult = {
   confidence: "low" | "medium" | "high"
   explanation: string
   mealDescription: string
-  mealType?: MealType
+  mealType: MealType
   photoPath?: string
   photoUrl?: string
   coaching?: Coaching
@@ -135,7 +135,7 @@ useEffect(() => {
     try {
       const date = getTodayDateString(APP_TIMEZONE)
 
-      console.log("handleLogMeal args:", {
+      console.log( {
         mealType,
         hasPhoto: !!photo,
         photoName: (photo as any)?.name,
@@ -177,7 +177,7 @@ useEffect(() => {
         photoPath: uploaded.path,
         photoUrl: uploaded.publicUrl,
         coaching: data.coaching ?? undefined,
-      })
+})
 
       setDailyProtein(Number(data.daily?.protein_total ?? dailyProtein))
     } catch (e: any) {
@@ -254,12 +254,14 @@ useEffect(() => {
               <img src={mealResult.photoUrl} alt="Uploaded meal" className="w-full rounded-lg" />
             )}
 
-            <ResultsScreen
-              result={mealResult}
-              onAddToday={handleAddToday}
-              onEditMeal={handleEditMeal}
-              isLoading={isLoading}
-            />
+         <ResultsScreen
+  result={mealResult}
+  dailyGoal={dailyGoal}
+  onAddToday={handleAddToday}
+  onEditMeal={handleEditMeal}
+  isLoading={isLoading}
+/>
+
           </div>
         )}
       </div>
