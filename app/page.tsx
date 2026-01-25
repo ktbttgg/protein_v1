@@ -153,7 +153,7 @@ useEffect(() => {
 
       const uploaded = await uploadMealPhoto(photo)
 
-      const { data, error } = await supabase.functions.invoke("analyze_meal_protein_and_update_day", {
+      const { data, error } = await supabase.functions.invoke("analyze_meal_protein_and_update_day_v2", {
         body: {
           session_id: sessionId,
           date, // Melbourne-safe, canonical
