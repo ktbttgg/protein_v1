@@ -131,6 +131,7 @@ useEffect(() => {
     setCurrentScreen("results")
     setIsLoading(true)
     setMealResult(null)
+    
 
     try {
       const date = getTodayDateString(APP_TIMEZONE)
