@@ -10,10 +10,10 @@ const corsHeaders = {
 
 type RequestBody = {
   session_id: string;
-  date: string; // "YYYY-MM-DD"
+  date: string;
   meal_text?: string;
   meal_type?: "breakfast" | "lunch" | "dinner" | "snack";
-  photo_path: string; // path inside bucket
+  photo_path: string;
 };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -53,11 +53,9 @@ type MealLLMOutput = {
   protein_grams: number;
   confidence: "low" | "medium" | "high";
   notes: string;
-
   fat_risk: MacroRisk;
   fibre_risk: MacroRisk;
   carb_type: CarbType;
-
   meal_summary: string;
   coaching: CoachingOut;
 };
@@ -67,96 +65,116 @@ function clampText(text: string, max = 220) {
   return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t;
 }
 
-/**
- * Local dev fix:
- * OpenAI can't fetch your localhost/kong signed URL.
- * So we fetch the signed URL server-side (Supabase can),
- * then send the image to OpenAI as a data URL (base64).
- */
-async function fetchImageAsDataUrl(url: string): Promise<string> {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`Failed to fetch image for base64: ${r.status}`);
-  const contentType = r.headers.get("content-type") ?? "image/jpeg";
-  const bytes = new Uint8Array(await r.arrayBuffer());
+const MEAL_COACH_PROMPT = `
+You are a meal coach for busy female parents.
+They are time-poor, practical, and want fat loss without tracking, restriction, guilt, or diet culture.
 
-  // Convert bytes -> base64 (avoid stack issues with large arrays)
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  const base64 = btoa(binary);
-
-  return `data:${contentType};base64,${base64}`;
-}
-
-/**
- * v2: Analyze meal from IMAGE (primary truth) and produce:
- * - protein estimate + confidence + notes
- * - silent steering flags (fat/fibre/carbs)
- * - coaching (five_min_fix, next_time_tweak, reason)
- */
-async function analyzeMealFromImage(opts: EstimateOpts): Promise<MealLLMOutput> {
-  const { signedImageUrl, mealText, mealType } = opts;
-
-  const instruction = `
-You are a meal coach for busy female parents (time-poor, practical, not interested in tracking).
-
-Your job is to analyze ONE meal from an IMAGE and produce:
-1) A protein estimate
-2) Silent steering flags (fat, fibre, carbs)
-3) Practical coaching that feels specific to THIS meal
+Your job is to analyse ONE meal from an IMAGE and produce:
+1) A directionally useful protein estimate
+2) Meal flags for the UI
+3) Coaching that helps the user make one better food decision next time
 
 PRIMARY INPUT RULES
 - The IMAGE is the primary source of truth.
 - Text is optional and may be wrong.
 - If the image is unclear, lower confidence.
+- Describe what you can see before guessing what it is.
+- Do NOT confidently name a specific branded or exact food if it is only visually similar.
+- Prefer "wheat biscuit cereal" over guessing "bran cereal" or "Weet-Bix" unless packaging/text clearly confirms it.
+- If milk, sauce, dressing, oil, butter, or spread is uncertain, say "possible" or "not clearly visible" in notes. Do not build coaching around an uncertain absence.
+
+BEHAVIOUR CHANGE PRINCIPLE
+Before giving advice, decide whether the meal is:
+- already strong
+- decent but could be improved
+- clearly low protein
+
+If the meal is already a good protein choice, reinforce the good choice first.
+Do not make every meal feel like a problem.
+A good coach sometimes says: "This is already a solid choice."
+
+CORE INTENT
+- The main lever is protein showing up clearly.
+- If protein is low or not clearly present, coaching should prioritise protein.
+- If protein is already clearly present, coaching should reinforce that and suggest only a small optional improvement.
+- Do NOT suggest nuts/seeds/nut butter as the main protein fix unless no better option fits. They are mostly useful for crunch, fats, and small top-ups, not meaningful protein correction.
+
+COACHING OUTPUT STRUCTURE
+Return three coaching fields:
+A) five_min_fix
+B) next_time_tweak
+C) reason
+
+FIVE-MINUTE FIX RULES
+- Must be doable now in 5 minutes or less.
+- Household/fridge/pantry only.
+- One action only.
+- Must start with: Add / Swap / Reduce / Skip / Keep
+- If the meal is already strong, it may start with "Keep".
+- If recommending an add-on, name a specific food.
+- Avoid generic phrases like "add protein" or "add a protein side" unless examples are included.
+- If protein is low, prefer high-impact options: eggs, Greek yoghurt, cottage cheese, tuna/salmon, chicken, tofu, protein milk, protein shake.
+- Do not recommend "add milk" to cereal unless milk is clearly absent. If milk is uncertain, use: "If there isn't milk already..."
+
+NEXT TIME TWEAK RULES
+- Must start with: "Next time,"
+- One action only.
+- Must reference the actual meal.
+- Should be the most natural improvement for that meal:
+  - toast: eggs, cheese, cottage cheese, smoked salmon
+  - cereal: Greek yoghurt, protein milk, high-protein yoghurt
+  - yoghurt bowl: increase yoghurt portion, add protein powder, use high-protein yoghurt
+  - pasta: add chicken, tuna, mince, tofu, lentils
+  - pizza: add a protein side or choose a protein-heavy topping
+  - salad: add chicken, tuna, eggs, tofu, chickpeas
+
+REASON RULES
+- 1–2 short sentences.
+- Must reference THIS meal.
+- Explain fullness/satisfaction/repeatability.
+- No calories.
+- No moralising.
+- If the meal is already good, say so.
+- Optionality is allowed, but avoid repeating the same options every time.
+
+MEAL SUMMARY
+- Short and concrete.
+- Describe visible food rather than guessing.
+- Include visible protein source if present.
+- Good examples:
+  - "Two slices of toast with a dark spread."
+  - "Toast with avocado and sliced boiled egg."
+  - "Bowl of chocolate cereal; milk is not clearly visible."
+  - "Greek yoghurt bowl with mixed berries."
+
+NOTES
+- Say what you saw and the assumption used for protein.
+- Mention uncertainty clearly.
+- Mention hidden extras only if visible or genuinely likely.
+- Do not say oil/butter/cheese/nuts are present unless visible or strongly implied.
+
+FLAGS
+fat_risk:
+- high only if fried food, creamy sauce, lots of cheese, visible oil/butter, fatty cuts, nut-heavy meals.
+- medium if some spread, avocado, nuts, cheese, or possible oil.
+- low if lean/simple.
+
+fibre_risk:
+- high if mostly refined carbs with little fruit/veg/legumes/wholegrains.
+- medium if some plant foods.
+- low if clear fruit/veg/legumes/wholegrains.
+
+carb_type:
+- refined_heavy if white bread, sugary cereal, pizza, chips, pastries, white pasta/rice dominate.
+- mixed if there is a balance.
+- low if carbs are not dominant.
 
 OUTPUT RULES
 - Return STRICT JSON ONLY.
-- No markdown, no extra text outside JSON.
-- Do NOT ask the user to track calories, macros, fat, fibre, or carbs.
-- Do NOT mention grams of fat, fibre, or carbs.
-- Keep language simple, friendly, and non-preachy.
-
-MEAL SUMMARY + PORTION ASSUMPTIONS
-meal_summary:
-- Short, concrete description of what the meal likely is.
-- Include a brief protein portion descriptor when possible (e.g., "salmon (~120g)", "2 eggs", "chicken (~palm-sized)").
-notes:
-- Briefly state what you saw + the assumptions used for protein grams.
-
-COACHING FIELD DEFINITIONS (DO NOT BLUR THESE)
-five_min_fix:
-- TRIAGE for right now.
-- doable RIGHT NOW in 5 minutes or less
-- household items only
-- no shopping, no prep, no “next time”
-- one action only
-- may add/swap/reduce/skip
-- MUST start with: Add / Swap / Reduce / Skip
-
-next_time_tweak:
-- RECIPE UPGRADE for next time you make THIS SAME meal
-- must NOT be doable immediately
-- may involve shopping/prep/cooking/stocking
-- must mention at least ONE item seen in the meal (e.g., crackers, cheese, seeds, salmon, mince, noodles)
-- one action only
-- MUST start with: "Next time,"
-
-HARD DISTINCTION TEST
-- If you can do it right now in under 5 minutes, it belongs in five_min_fix, NOT next_time_tweak.
-
-NEXT TIME FORMAT (choose ONE)
-- "Next time, add ONE planned ingredient to upgrade this meal: ____."
-- "Next time, change ONE prep or cooking step to upgrade this meal: ____."
-- "Next time, keep ONE item stocked so this meal is better: ____."
-
-AVOID GENERIC PHRASES
-Avoid: "protein first", "build around protein", "repeat this structure", "balance your plate", "focus on consistency"
-Veg guidance is allowed but MUST be specific (name the veg/plant item).
-
-SILENT STEERING FLAGS (internal only)
-fat_risk: high if fried/creamy/lots of cheese/oil/fatty cuts/pastries/large seed-nut portions
-fibre_risk: high if low plants/whole grains/legumes
-carb_type: refined_heavy if white bread/pasta/chips/pastry/sugary items dominate
+- No markdown.
+- No extra text.
+- Do NOT ask the user to track calories/macros.
+- Do NOT mention numbers other than protein grams.
 
 RETURN JSON IN EXACTLY THIS SHAPE
 {
@@ -175,10 +193,35 @@ RETURN JSON IN EXACTLY THIS SHAPE
 }
 `.trim();
 
+async function fetchImageAsDataUrl(url: string): Promise<string> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Failed to fetch image for base64: ${r.status}`);
+  const contentType = r.headers.get("content-type") ?? "image/jpeg";
+  const bytes = new Uint8Array(await r.arrayBuffer());
+
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64 = btoa(binary);
+
+  return `data:${contentType};base64,${base64}`;
+}
+
+function stripJsonFences(text: string) {
+  return String(text)
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+}
+
+async function analyzeMealFromImage(opts: EstimateOpts): Promise<MealLLMOutput> {
+  const { signedImageUrl, mealText, mealType } = opts;
+
   const hint = `
 Optional hints:
-- meal_type:${mealType ?? "unknown"}
-- text:${mealText?.trim() ? mealText.trim() : "none"}
+- meal_type: ${mealType ?? "unknown"}
+- text: ${mealText?.trim() ? mealText.trim() : "none"}
 `.trim();
 
   const dataUrl = await fetchImageAsDataUrl(signedImageUrl);
@@ -191,12 +234,12 @@ Optional hints:
     },
     body: JSON.stringify({
       model: "gpt-4.1-mini",
-      temperature: 0.3,
+      temperature: 0.25,
       input: [
         {
           role: "user",
           content: [
-            { type: "input_text", text: instruction },
+            { type: "input_text", text: MEAL_COACH_PROMPT },
             { type: "input_text", text: hint },
             { type: "input_image", image_url: dataUrl },
           ],
@@ -213,12 +256,12 @@ Optional hints:
   const data = await resp.json();
 
   const outputText =
-    data?.output?.[0]?.content?.find((c: any) => c?.type === "output_text")
-      ?.text ?? "";
+    data?.output?.[0]?.content?.find((c: any) => c?.type === "output_text")?.text ??
+    "";
 
   let parsed: any;
   try {
-    parsed = JSON.parse(String(outputText).trim());
+    parsed = JSON.parse(stripJsonFences(outputText));
   } catch {
     throw new Error(`Model did not return valid JSON: "${outputText}"`);
   }
@@ -247,19 +290,19 @@ Optional hints:
   const carbOk =
     carb_type === "low" || carb_type === "mixed" || carb_type === "refined_heavy";
 
-  const meal_summary = clampText(String(parsed?.meal_summary ?? ""), 140);
+  const meal_summary = clampText(String(parsed?.meal_summary ?? ""), 160);
 
   const c = parsed?.coaching ?? {};
   const coaching: CoachingOut = {
-    five_min_fix: clampText(String(c?.five_min_fix ?? ""), 220),
-    next_time_tweak: clampText(String(c?.next_time_tweak ?? ""), 220),
-    reason: clampText(String(c?.reason ?? ""), 220),
+    five_min_fix: clampText(String(c?.five_min_fix ?? ""), 240),
+    next_time_tweak: clampText(String(c?.next_time_tweak ?? ""), 240),
+    reason: clampText(String(c?.reason ?? ""), 280),
   };
 
   return {
     protein_grams: Math.round(protein),
     confidence: confOk ? confidence : "medium",
-    notes: notes.slice(0, 300),
+    notes: clampText(notes, 360),
     fat_risk: fatOk ? fat_risk : "medium",
     fibre_risk: fibreOk ? fibre_risk : "medium",
     carb_type: carbOk ? carb_type : "mixed",
@@ -268,11 +311,7 @@ Optional hints:
   };
 }
 
-/* ------------------------------------------------------------------
-   Coaching taxonomy + deterministic fallback
-------------------------------------------------------------------- */
-
-type CoachingFocus = "protein" | "balance" | "snack" | "portion";
+type CoachingFocus = "protein" | "balance" | "snack" | "reinforce";
 
 type CoachingScenario =
   | "UNKNOWN_MEAL"
@@ -281,7 +320,8 @@ type CoachingScenario =
   | "LOW_PROTEIN_DINNER"
   | "LOW_PROTEIN_SNACK"
   | "MEDIUM_PROTEIN"
-  | "HIGH_PROTEIN";
+  | "HIGH_PROTEIN"
+  | "GOOD_START";
 
 type Coaching = {
   scenario_id: CoachingScenario;
@@ -291,102 +331,320 @@ type Coaching = {
   reason: string;
 };
 
+function getMealProteinTarget(mealType?: string) {
+  switch (mealType) {
+    case "breakfast":
+      return 30;
+    case "lunch":
+      return 35;
+    case "dinner":
+      return 35;
+    case "snack":
+      return 20;
+    default:
+      return 30;
+  }
+}
+
+function textIncludesAny(text: string, words: string[]) {
+  const t = (text || "").toLowerCase();
+  return words.some((w) => t.includes(w));
+}
+
+function hasStrongProteinCue(text: string) {
+  return textIncludesAny(text, [
+    "egg",
+    "eggs",
+    "chicken",
+    "tuna",
+    "salmon",
+    "fish",
+    "beef",
+    "steak",
+    "mince",
+    "turkey",
+    "ham",
+    "yoghurt",
+    "yogurt",
+    "greek",
+    "cottage",
+    "ricotta",
+    "tofu",
+    "tempeh",
+    "lentil",
+    "lentils",
+    "bean",
+    "beans",
+    "chickpea",
+    "chickpeas",
+    "protein shake",
+    "protein milk",
+    "protein powder",
+  ]);
+}
+
+function hasWeakProteinOnlyFix(text: string) {
+  const t = (text || "").toLowerCase();
+  const weak = ["nuts", "seeds", "peanut butter", "nut butter", "hummus"];
+  const strong = [
+    "egg",
+    "eggs",
+    "chicken",
+    "tuna",
+    "salmon",
+    "greek yoghurt",
+    "greek yogurt",
+    "cottage",
+    "tofu",
+    "protein shake",
+    "protein milk",
+    "protein powder",
+    "cheese",
+  ];
+  return weak.some((w) => t.includes(w)) && !strong.some((s) => t.includes(s));
+}
+
 function deriveCoachingScenario(opts: {
   proteinGrams: number;
   confidence: "low" | "medium" | "high";
   mealType?: "breakfast" | "lunch" | "dinner" | "snack";
+  mealSummary?: string;
+  notes?: string;
 }): { scenario_id: CoachingScenario; focus: CoachingFocus } {
-  const { proteinGrams, confidence, mealType } = opts;
+  const { proteinGrams, confidence, mealType, mealSummary = "", notes = "" } = opts;
 
   if (confidence === "low" || !Number.isFinite(proteinGrams)) {
     return { scenario_id: "UNKNOWN_MEAL", focus: "protein" };
   }
 
-  const LOW = 20;
-  const HIGH = 35;
+  const combined = `${mealSummary} ${notes}`;
+  const target = getMealProteinTarget(mealType);
 
-  if (proteinGrams >= HIGH) return { scenario_id: "HIGH_PROTEIN", focus: "protein" };
-  if (proteinGrams >= LOW) return { scenario_id: "MEDIUM_PROTEIN", focus: "protein" };
+  if (proteinGrams >= target) {
+    return { scenario_id: "HIGH_PROTEIN", focus: "reinforce" };
+  }
 
-  if (mealType === "breakfast") return { scenario_id: "LOW_PROTEIN_BREAKFAST", focus: "protein" };
-  if (mealType === "lunch") return { scenario_id: "LOW_PROTEIN_LUNCH", focus: "protein" };
-  if (mealType === "dinner") return { scenario_id: "LOW_PROTEIN_DINNER", focus: "protein" };
-  if (mealType === "snack") return { scenario_id: "LOW_PROTEIN_SNACK", focus: "snack" };
+  if (proteinGrams >= target - 10 && hasStrongProteinCue(combined)) {
+    return { scenario_id: "GOOD_START", focus: "reinforce" };
+  }
+
+  if (proteinGrams >= 18) {
+    return { scenario_id: "MEDIUM_PROTEIN", focus: "protein" };
+  }
+
+  if (hasStrongProteinCue(combined) && proteinGrams >= 10) {
+    return { scenario_id: "GOOD_START", focus: "reinforce" };
+  }
+
+  if (mealType === "breakfast") {
+    return { scenario_id: "LOW_PROTEIN_BREAKFAST", focus: "protein" };
+  }
+  if (mealType === "lunch") {
+    return { scenario_id: "LOW_PROTEIN_LUNCH", focus: "protein" };
+  }
+  if (mealType === "dinner") {
+    return { scenario_id: "LOW_PROTEIN_DINNER", focus: "protein" };
+  }
+  if (mealType === "snack") {
+    return { scenario_id: "LOW_PROTEIN_SNACK", focus: "snack" };
+  }
 
   return { scenario_id: "UNKNOWN_MEAL", focus: "protein" };
+}
+
+function mealSpecificTopUp(opts: {
+  mealType?: string;
+  mealSummary?: string;
+  notes?: string;
+}) {
+  const text = `${opts.mealSummary ?? ""} ${opts.notes ?? ""}`.toLowerCase();
+
+  if (text.includes("yoghurt") || text.includes("yogurt") || text.includes("berries")) {
+    return {
+      five_min_fix:
+        "Add a little more Greek yoghurt or stir in protein powder if you have it, then eat the berries and yoghurt.",
+      next_time_tweak:
+        "Next time, use a larger serve of Greek yoghurt or a higher-protein yoghurt as the base.",
+      reason:
+        "This is already a strong breakfast pattern. Increasing the yoghurt portion is the easiest way to make it more filling without changing the meal.",
+    };
+  }
+
+  if (text.includes("egg") || text.includes("avocado")) {
+    return {
+      five_min_fix:
+        "Keep the eggs as the anchor; if you are still hungry, add one extra egg or a spoon of cottage cheese.",
+      next_time_tweak:
+        "Next time, add one more egg or a cottage cheese layer to the avocado toast.",
+      reason:
+        "This is already a solid choice because the eggs are doing the heavy lifting. A small protein top-up only matters if you want it to hold you longer.",
+    };
+  }
+
+  if (text.includes("cereal")) {
+    return {
+      five_min_fix:
+        "Add Greek yoghurt or protein milk if you have it; if there is no milk already, add milk first.",
+      next_time_tweak:
+        "Next time, pair this cereal with Greek yoghurt or protein milk so it keeps you fuller.",
+      reason:
+        "Cereal is usually easy to eat quickly, so pairing it with a stronger protein base makes the same breakfast more satisfying.",
+    };
+  }
+
+  if (text.includes("toast") || text.includes("bread") || text.includes("sourdough")) {
+    return {
+      five_min_fix:
+        "Add an egg, cheese, or cottage cheese to the toast first, then eat the rest.",
+      next_time_tweak:
+        "Next time, make the toast start with a clear protein topping like eggs, cheese, cottage cheese, or smoked salmon.",
+      reason:
+        "Toast is easy and repeatable; adding a clear protein topping makes it more filling without changing the whole meal.",
+    };
+  }
+
+  if (text.includes("pasta") || text.includes("noodle")) {
+    return {
+      five_min_fix:
+        "Add tuna, chicken, tofu, or leftover meat if you have it, then eat the pasta.",
+      next_time_tweak:
+        "Next time, add a planned protein like chicken, tuna, mince, tofu, or lentils into the pasta.",
+      reason:
+        "Pasta is more satisfying when the protein is built into the bowl rather than left as an afterthought.",
+    };
+  }
+
+  return {
+    five_min_fix:
+      "Add a simple protein top-up now if you have one: an egg, Greek yoghurt, cottage cheese, tuna, chicken, tofu, or a protein shake.",
+    next_time_tweak:
+      "Next time, add one clear protein anchor to this meal so it keeps you fuller.",
+    reason:
+      "A clear protein anchor makes the meal more satisfying and easier to repeat without tracking.",
+  };
 }
 
 function fallbackCoaching(
   scenario_id: CoachingScenario,
   proteinGrams: number,
+  mealSummary?: string,
+  notes?: string,
+  mealType?: string,
 ): Omit<Coaching, "scenario_id" | "focus"> {
+  const specific = mealSpecificTopUp({ mealType, mealSummary, notes });
+
   switch (scenario_id) {
-    case "LOW_PROTEIN_BREAKFAST":
+    case "GOOD_START":
       return {
         five_min_fix:
-          "Add a quick protein side like Greek yoghurt, eggs, or a protein milk/latte.",
-        next_time_tweak:
-          "Next time, start breakfast with a protein base (eggs, yoghurt bowl, or a shake) then add carbs.",
-        reason: "Breakfast looks low on protein, so a simple add-on helps immediately.",
-      };
-
-    case "LOW_PROTEIN_LUNCH":
-      return {
-        five_min_fix:
-          "Add a quick protein side like tinned tuna/salmon, leftover chicken, or a tub of Greek yoghurt.",
-        next_time_tweak:
-          "Next time, add one planned protein item to this lunch (chicken, tuna, eggs, or tofu).",
-        reason: "Lunch looks low on protein; a fast add-on is the quickest win.",
-      };
-
-    case "LOW_PROTEIN_DINNER":
-      return {
-        five_min_fix:
-          "Add a protein anchor now: extra meat/fish, eggs, tofu, or a quick yoghurt-based side.",
-        next_time_tweak:
-          "Next time, add one planned protein portion to this dinner so it lands stronger.",
-        reason: "Dinner looks low on protein; anchoring the meal makes it simple.",
-      };
-
-    case "LOW_PROTEIN_SNACK":
-      return {
-        five_min_fix:
-          "Swap or add a protein snack: yoghurt, cheese, boiled eggs, jerky, or a shake.",
-        next_time_tweak:
-          "Next time, keep one grab-and-go protein snack stocked so it’s effortless.",
-        reason: "Snack looks low on protein; a quick swap improves satiety fast.",
+          "Keep the protein anchor you already have; only add a small top-up if you are still hungry.",
+        next_time_tweak: specific.next_time_tweak,
+        reason:
+          "This meal already has a useful protein base. The win is repeating this pattern, not fixing everything.",
       };
 
     case "HIGH_PROTEIN":
       return {
         five_min_fix:
-          "Nice — this is already protein-forward. If you’re still hungry, add fruit or veg on the side.",
+          "Keep this as-is if it feels satisfying; add fruit or veg only if you want more volume.",
         next_time_tweak:
-          "Next time, keep the same protein portion and add one veg/plant side you enjoy.",
-        reason: `Protein is already strong (~${Math.round(proteinGrams)}g), so the win is consistency.`,
+          "Next time, repeat this protein base and add a fruit or veg side you actually like.",
+        reason:
+          `Protein looks strong at around ${Math.round(proteinGrams)}g, so this is more about repeatability than correction.`,
       };
 
     case "MEDIUM_PROTEIN":
-      return {
-        five_min_fix:
-          "Add a small protein top-up now: yoghurt, a slice of cheese, an egg, or tinned fish.",
-        next_time_tweak:
-          "Next time, add one planned protein item so you don’t have to ‘fix it’ later.",
-        reason: "Protein is mid-range; one small add-on usually gets it over the line.",
-      };
+      return specific;
 
+    case "LOW_PROTEIN_BREAKFAST":
+    case "LOW_PROTEIN_LUNCH":
+    case "LOW_PROTEIN_DINNER":
+    case "LOW_PROTEIN_SNACK":
+    case "UNKNOWN_MEAL":
     default:
-      return {
-        five_min_fix:
-          "Add something protein-y now if you can: yoghurt, eggs, tinned fish, leftover meat, or a shake.",
-        next_time_tweak:
-          "Next time, add one planned protein item to this meal so it’s more filling.",
-        reason: "The meal is unclear, so the safest coaching is a simple protein add-on.",
-      };
+      return specific;
   }
 }
 
+function startsWithAllowedAction(text: string) {
+  const t = (text || "").trim().toLowerCase();
+  return (
+    t.startsWith("add ") ||
+    t.startsWith("swap ") ||
+    t.startsWith("reduce ") ||
+    t.startsWith("skip ") ||
+    t.startsWith("keep ")
+  );
+}
+
+function fixActionStart(text: string) {
+  if (startsWithAllowedAction(text)) return text;
+  return `Add ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+}
+
+function normaliseCoaching(opts: {
+  analysis: MealLLMOutput;
+  scenario_id: CoachingScenario;
+  estimateGrams: number;
+  mealType?: string;
+}) {
+  const { analysis, scenario_id, estimateGrams, mealType } = opts;
+  const fallback = fallbackCoaching(
+    scenario_id,
+    estimateGrams,
+    analysis.meal_summary,
+    analysis.notes,
+    mealType,
+  );
+
+  const llmCoachingOk =
+    analysis.confidence !== "low" &&
+    analysis.coaching?.five_min_fix &&
+    analysis.coaching?.next_time_tweak &&
+    analysis.coaching?.reason &&
+    String(analysis.coaching.next_time_tweak).toLowerCase().startsWith("next time,");
+
+  let coachingText = llmCoachingOk ? analysis.coaching : fallback;
+
+  const target = getMealProteinTarget(mealType);
+  const shortfall = target - estimateGrams;
+  const combined = `${analysis.meal_summary} ${analysis.notes}`;
+  const hasProteinAlready = hasStrongProteinCue(combined);
+
+  if (
+    scenario_id === "GOOD_START" ||
+    scenario_id === "HIGH_PROTEIN" ||
+    (hasProteinAlready && estimateGrams >= 10)
+  ) {
+    if (
+      hasWeakProteinOnlyFix(coachingText.five_min_fix) ||
+      !String(coachingText.reason).toLowerCase().includes("already")
+    ) {
+      coachingText = fallback;
+    }
+  } else if (
+    analysis.confidence !== "low" &&
+    shortfall > 3 &&
+    (hasWeakProteinOnlyFix(coachingText.five_min_fix) ||
+      !hasStrongProteinCue(coachingText.five_min_fix))
+  ) {
+    coachingText = mealSpecificTopUp({
+      mealType,
+      mealSummary: analysis.meal_summary,
+      notes: analysis.notes,
+    });
+  }
+
+  return {
+    five_min_fix: clampText(fixActionStart(coachingText.five_min_fix), 240),
+    next_time_tweak: clampText(coachingText.next_time_tweak, 240),
+    reason: clampText(coachingText.reason, 280),
+  };
+}
+
 Deno.serve(async (req: Request) => {
+  console.log("v2 function hit:", req.method, new Date().toISOString());
+
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Only POST allowed" }, 405);
 
@@ -405,7 +663,6 @@ Deno.serve(async (req: Request) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // Signed URL that Supabase can fetch (even if it's docker-internal).
     const { data: signed, error: signedErr } = await supabase.storage
       .from(BUCKET)
       .createSignedUrl(photo_path, 60 * 10);
@@ -414,7 +671,6 @@ Deno.serve(async (req: Request) => {
       throw new Error(`createSignedUrl failed: ${signedErr?.message ?? "no signedUrl"}`);
     }
 
-    // 1) Insert meal
     const { data: mealRow, error: mealInsertErr } = await supabase
       .from(MEALS_TABLE)
       .insert({
@@ -422,7 +678,7 @@ Deno.serve(async (req: Request) => {
         date,
         meal_text: meal_text || null,
         meal_type: meal_type ?? null,
-        photo_url: signed.signedUrl, // fine locally
+        photo_url: signed.signedUrl,
       })
       .select("id")
       .single();
@@ -430,7 +686,6 @@ Deno.serve(async (req: Request) => {
     if (mealInsertErr) throw new Error(`meals insert failed: ${mealInsertErr.message}`);
     const meal_id = mealRow.id as string;
 
-    // 2) LLM analysis + coaching
     const analysis = await analyzeMealFromImage({
       signedImageUrl: signed.signedUrl,
       mealText: meal_text || undefined,
@@ -447,43 +702,34 @@ Deno.serve(async (req: Request) => {
       proteinGrams: estimate.grams,
       confidence: estimate.confidence,
       mealType: meal_type,
+      mealSummary: analysis.meal_summary,
+      notes: analysis.notes,
     });
 
-    let coachingText: { five_min_fix: string; next_time_tweak: string; reason: string };
-
-    const llmCoachingOk =
-      estimate.confidence !== "low" &&
-      analysis.coaching?.five_min_fix &&
-      analysis.coaching?.next_time_tweak &&
-      analysis.coaching?.reason &&
-      String(analysis.coaching.next_time_tweak).toLowerCase().startsWith("next time,");
-
-    if (llmCoachingOk) {
-      coachingText = analysis.coaching;
-    } else {
-      coachingText = fallbackCoaching(scenario_id, estimate.grams);
-    }
+    const coachingText = normaliseCoaching({
+      analysis,
+      scenario_id,
+      estimateGrams: estimate.grams,
+      mealType: meal_type,
+    });
 
     const coaching: Coaching = {
       scenario_id,
       focus,
-      five_min_fix: clampText(coachingText.five_min_fix),
-      next_time_tweak: clampText(coachingText.next_time_tweak),
-      reason: clampText(coachingText.reason),
+      five_min_fix: coachingText.five_min_fix,
+      next_time_tweak: coachingText.next_time_tweak,
+      reason: coachingText.reason,
     };
 
-    // 3) Insert analysis (Option B fields)
     const { error: analysisErr } = await supabase.from(MEAL_ANALYSIS_TABLE).insert({
       meal_id,
       protein_grams: estimate.grams,
       confidence: estimate.confidence,
       notes: estimate.notes,
-
       meal_summary: analysis.meal_summary,
       fat_risk: analysis.fat_risk,
       fibre_risk: analysis.fibre_risk,
       carb_type: analysis.carb_type,
-
       five_min_fix: coaching.five_min_fix,
       next_time_tweak: coaching.next_time_tweak,
       coaching_reason: coaching.reason,
@@ -491,7 +737,6 @@ Deno.serve(async (req: Request) => {
 
     if (analysisErr) throw new Error(`meal_analysis insert failed: ${analysisErr.message}`);
 
-    // 4) Update daily totals
     const { data: dailyExisting, error: dailyGetErr } = await supabase
       .from(DAILY_TOTALS_TABLE)
       .select("id, protein_total, protein_goal")
@@ -521,6 +766,8 @@ Deno.serve(async (req: Request) => {
 
     if (dailyUpsertErr) throw new Error(`daily_totals upsert failed: ${dailyUpsertErr.message}`);
 
+    const mealTarget = getMealProteinTarget(meal_type);
+
     return json({
       success: true,
       meal_id,
@@ -529,12 +776,18 @@ Deno.serve(async (req: Request) => {
         confidence: estimate.confidence,
         notes: estimate.notes,
       },
+      meal_summary: analysis.meal_summary,
       coaching,
       daily: {
         date,
         protein_total: newTotal,
         protein_goal: goal,
         remaining: goal - newTotal,
+      },
+      meal_target: {
+        meal_type: meal_type ?? null,
+        protein_target: mealTarget,
+        shortfall: mealTarget - estimate.grams,
       },
     });
   } catch (err) {

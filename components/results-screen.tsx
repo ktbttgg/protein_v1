@@ -247,12 +247,6 @@ export function ResultsScreen({
           </Card>
         )}
 
-        {/* Meal description */}
-        <Card className="p-6">
-          <h2 className="mb-2 text-sm font-medium text-foreground">Meal</h2>
-          <p className="text-sm leading-relaxed text-foreground">{result.mealDescription}</p>
-        </Card>
-
         {/* Actions */}
         <div className="mt-auto flex flex-col gap-3">
           <Button size="lg" onClick={onAddToday}>
