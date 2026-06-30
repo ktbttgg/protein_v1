@@ -14,10 +14,20 @@ import { ResultsScreen } from "@/components/results-screen"
 import { getOrCreateSessionId, getTodayDateString, APP_TIMEZONE } from "@/lib/utils"
 
 export type Screen = "home" | "log" | "results"
-
-// Keep this here so you’re not dependent on component exports
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack"
 
+export type WatchoutId =
+  | "high_fat_extras"
+  | "large_refined_carbs"
+  | "fried"
+  | "processed_meat"
+  | "high_added_sugar"
+
+export type Watchout = {
+  id: WatchoutId
+  label: string
+  reason: string
+}
 
 export type MealResult = {
   protein: number
@@ -28,9 +38,10 @@ export type MealResult = {
   photoPath?: string
   photoUrl?: string
   coaching?: Coaching
-  
+  watchouts?: Watchout[]
 }
-export type CoachingFocus = "protein" | "balance" | "snack" | "portion"
+
+export type CoachingFocus = "protein" | "balance" | "snack" | "portion" | "reinforce"
 
 export type CoachingScenario =
   | "UNKNOWN_MEAL"
@@ -40,6 +51,7 @@ export type CoachingScenario =
   | "LOW_PROTEIN_SNACK"
   | "MEDIUM_PROTEIN"
   | "HIGH_PROTEIN"
+  | "GOOD_START"
 
 export type Coaching = {
   scenario_id: CoachingScenario
@@ -49,21 +61,169 @@ export type Coaching = {
   reason: string
 }
 
+const WATCHOUT_LABELS: Record<WatchoutId, string> = {
+  high_fat_extras: "High-fat extras",
+  large_refined_carbs: "Large refined carbs",
+  fried: "Fried or crumbed",
+  processed_meat: "Processed meat",
+  high_added_sugar: "High added sugar",
+}
+
+function normaliseText(text: string) {
+  return text.toLowerCase().replace(/\s+/g, " ").trim()
+}
+
+function hasAny(text: string, words: string[]) {
+  return words.some((word) => text.includes(word))
+}
+
+function addWatchout(output: Watchout[], id: WatchoutId, reason: string) {
+  if (output.some((w) => w.id === id)) return
+  if (output.length >= 2) return
+
+  output.push({
+    id,
+    label: WATCHOUT_LABELS[id],
+    reason,
+  })
+}
+
+function deriveWatchoutsFromText(textInput: string): Watchout[] {
+  const text = normaliseText(textInput)
+  const output: Watchout[] = []
+
+  const isSushi = hasAny(text, ["sushi", "nigiri"])
+  const isWholegrain = hasAny(text, ["wholegrain", "whole grain", "seeded", "whole wheat", "wholemeal"])
+  const isBalancedRiceMeal =
+    hasAny(text, ["chicken"]) &&
+    hasAny(text, ["vegetables", "broccoli", "carrots", "bell pepper", "capsicum"]) &&
+    hasAny(text, ["rice"]) &&
+    !hasAny(text, ["naan", "pizza", "pasta", "noodles", "chips", "fries"])
+
+  if (hasAny(text, ["chocolate cereal", "chocolate puffed cereal", "sugary cereal"])) {
+    addWatchout(
+      output,
+      "high_added_sugar",
+      "Chocolate or sugary cereal can be easy to overdo while still being low in protein."
+    )
+  }
+
+  if (hasAny(text, ["pepperoni", "salami", "sausage", "sausages", "bacon", "deli ham", "deli-style ham"]) || hasAny(text, [" ham "])) {
+    addWatchout(
+      output,
+      "processed_meat",
+      "Processed meats like ham, sausage, salami or pepperoni can quietly add up."
+    )
+  }
+
+  if (hasAny(text, ["battered", "crumbed", "deep fried", "fried fish", "fried chicken", "schnitzel"])) {
+    addWatchout(
+      output,
+      "fried",
+      "Battered, crumbed or fried foods can add extra heaviness around the protein."
+    )
+  }
+
+  const hasRefinedCarb =
+    !isSushi &&
+    !isWholegrain &&
+    !isBalancedRiceMeal &&
+    hasAny(text, [
+      "white toast",
+      "white bread",
+      "toasted white bread",
+      "white flour wrap",
+      "white wrap",
+      "flour tortilla",
+      "white flour tortilla",
+      "pizza",
+      "pizza base",
+      "pizza crust",
+      "pasta",
+      "spaghetti",
+      "penne",
+      "instant noodles",
+      "cup noodles",
+      "chips",
+      "fries",
+      "naan",
+    ])
+
+  if (hasRefinedCarb) {
+    addWatchout(
+      output,
+      "large_refined_carbs",
+      hasAny(text, ["pizza"])
+        ? "Pizza base is the dominant refined carbohydrate."
+        : hasAny(text, ["pasta", "spaghetti", "penne"])
+          ? "Pasta is the main refined carbohydrate in this meal."
+          : hasAny(text, ["instant noodles", "cup noodles"])
+            ? "Instant noodles are the main refined carbohydrate in this meal."
+            : hasAny(text, ["chips", "fries"])
+              ? "Chips or fries are the main refined carbohydrate here."
+              : hasAny(text, ["naan"])
+                ? "Naan can make the refined carbs stack up quickly."
+                : "White bread or wraps are the main refined carbohydrate here."
+    )
+  }
+
+  if (
+    hasAny(text, [
+      "creamy pasta",
+      "creamy sauce",
+      "cream sauce",
+      "cream",
+      "butter",
+      "margarine",
+      "peanut butter",
+      "nut butter",
+      "cheese pizza",
+      "melted cheese",
+      "aioli",
+      "mayo",
+      "mayonnaise",
+    ])
+  ) {
+    addWatchout(
+      output,
+      "high_fat_extras",
+      hasAny(text, ["creamy pasta", "creamy sauce", "cream sauce"])
+        ? "Creamy sauce is a major part of this meal."
+        : hasAny(text, ["peanut butter", "nut butter"])
+          ? "Nut butter is useful, but it is more energy-dense than protein-dense."
+          : hasAny(text, ["butter", "margarine"])
+            ? "Butter or margarine can quietly add up on toast."
+            : "Cheese, creamy sauces or rich extras can quietly add up."
+    )
+  }
+
+  return output.slice(0, 2)
+}
+
+function mergeWatchouts(primary: Watchout[], secondary: Watchout[]) {
+  const output: Watchout[] = []
+
+  for (const item of [...primary, ...secondary]) {
+    if (!item?.id) continue
+    if (output.some((w) => w.id === item.id)) continue
+    output.push(item)
+    if (output.length >= 2) break
+  }
+
+  return output
+}
+
 export default function Page() {
-  // TEMP DEBUG — REMOVE AFTER SESSION ISSUE IS CONFIRMED
-  // Shows which session_id this device is using (important for mobile debugging)
   const sessionId = getOrCreateSessionId()
-  const [mounted, setMounted] = useState(false);
+  const [mounted, setMounted] = useState(false)
 
-useEffect(() => {
-  setMounted(true);
-}, []);
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
-  // TEMP DEBUG — REMOVE AFTER CONFIRMED
   const todayMel = getTodayDateString(APP_TIMEZONE)
   const nowMel = new Date().toLocaleString("en-AU", { timeZone: APP_TIMEZONE })
   const nowUtc = new Date().toISOString()
-  
 
   const [currentScreen, setCurrentScreen] = useState<Screen>("home")
   const [dailyProtein, setDailyProtein] = useState<number>(0)
@@ -73,8 +233,6 @@ useEffect(() => {
   const dailyGoal = 120
 
   const isFileLike = (x: unknown): x is File => {
-    // Mobile Safari / some Android webviews can be weird with instanceof File
-    // This checks shape instead.
     if (!x || typeof x !== "object") return false
     const anyX = x as any
     return (
@@ -131,22 +289,9 @@ useEffect(() => {
     setCurrentScreen("results")
     setIsLoading(true)
     setMealResult(null)
-    
 
     try {
       const date = getTodayDateString(APP_TIMEZONE)
-
-      console.log( {
-        mealType,
-        hasPhoto: !!photo,
-        photoName: (photo as any)?.name,
-        photoType: (photo as any)?.type,
-        photoSize: (photo as any)?.size,
-        mealTextLen: mealText?.length ?? 0,
-        date,
-        timezone: APP_TIMEZONE,
-        sessionId,
-      })
 
       if (!photo) {
         throw new Error("Please add a photo (image is required for image-first analysis).")
@@ -154,31 +299,46 @@ useEffect(() => {
 
       const uploaded = await uploadMealPhoto(photo)
 
-      const { data, error } = await supabase.functions.invoke("analyze_meal_protein_and_update_day_v2", {
-        body: {
-          session_id: sessionId,
-          date, // Melbourne-safe, canonical
-          meal_text: mealText || "",
-          meal_type: mealType,
-          photo_path: uploaded.path,
-        },
-      })
+      const { data, error } = await supabase.functions.invoke(
+        "analyze_meal_protein_and_update_day_v2",
+        {
+          body: {
+            session_id: sessionId,
+            date,
+            meal_text: mealText || "",
+            meal_type: mealType,
+            photo_path: uploaded.path,
+          },
+        }
+      )
 
       console.log("FUNCTION RESULT", { data, error })
 
       if (error) throw error
       if (!data?.success) throw new Error(data?.error ?? "Function returned success=false")
 
+      const explanation = String(data.estimate?.notes ?? "")
+      const serverWatchouts = Array.isArray(data.watchouts)
+        ? data.watchouts
+        : Array.isArray(data.estimate?.watchouts)
+          ? data.estimate.watchouts
+          : []
+
+      const derivedWatchouts = deriveWatchoutsFromText(
+        `${explanation} ${data.meal_summary ?? ""} ${mealText ?? ""}`
+      )
+
       setMealResult({
         protein: Number(data.estimate?.protein_grams ?? 0),
         confidence: (data.estimate?.confidence ?? "medium") as "low" | "medium" | "high",
-        explanation: String(data.estimate?.notes ?? ""),
+        explanation,
         mealDescription: mealText || "(no description)",
         mealType,
         photoPath: uploaded.path,
         photoUrl: uploaded.publicUrl,
         coaching: data.coaching ?? undefined,
-})
+        watchouts: mergeWatchouts(derivedWatchouts, serverWatchouts),
+      })
 
       setDailyProtein(Number(data.daily?.protein_total ?? dailyProtein))
     } catch (e: any) {
@@ -189,6 +349,7 @@ useEffect(() => {
         explanation: `Failed: ${String(e?.message ?? e)}`,
         mealDescription: mealText || "(no description)",
         mealType,
+        watchouts: [],
       })
     } finally {
       setIsLoading(false)
@@ -205,17 +366,14 @@ useEffect(() => {
   return (
     <div className="min-h-screen bg-background">
       <div className="mx-auto max-w-md">
-                {/* TEMP DEBUG — REMOVE AFTER CONFIRMED */} 
-      {mounted && (
-  <div className="p-2 text-xs text-muted-foreground break-all space-y-1">
-    <div>session_id: {sessionId}</div>
-    <div>todayMel (YYYY-MM-DD): {todayMel}</div>
-    <div>nowMel: {nowMel}</div>
-    <div>nowUtc: {nowUtc}</div>
-  </div>
-)}
-
-
+        {mounted && (
+          <div className="p-2 text-xs text-muted-foreground break-all space-y-1">
+            <div>session_id: {sessionId}</div>
+            <div>todayMel (YYYY-MM-DD): {todayMel}</div>
+            <div>nowMel: {nowMel}</div>
+            <div>nowUtc: {nowUtc}</div>
+          </div>
+        )}
 
         {currentScreen === "home" && (
           <HomeScreen
@@ -230,19 +388,16 @@ useEffect(() => {
             onSubmit={(mealText: string, arg2?: any, arg3?: any) => {
               const defaultType: MealType = "dinner"
 
-              // Pattern A: onSubmit(mealText, photo)
               if (isFileLike(arg2)) {
                 return handleLogMeal(mealText, defaultType, arg2)
               }
 
-              // Pattern B: onSubmit(mealText, mealType, photo)
               if (typeof arg2 === "string") {
                 const mt = (arg2 as MealType) || defaultType
                 const file = isFileLike(arg3) ? (arg3 as File) : undefined
                 return handleLogMeal(mealText, mt, file)
               }
 
-              // No photo passed
               return handleLogMeal(mealText, defaultType, undefined)
             }}
             onBack={() => setCurrentScreen("home")}
@@ -255,14 +410,13 @@ useEffect(() => {
               <img src={mealResult.photoUrl} alt="Uploaded meal" className="w-full rounded-lg" />
             )}
 
-         <ResultsScreen
-  result={mealResult}
-  dailyGoal={dailyGoal}
-  onAddToday={handleAddToday}
-  onEditMeal={handleEditMeal}
-  isLoading={isLoading}
-/>
-
+            <ResultsScreen
+              result={mealResult}
+              dailyGoal={dailyGoal}
+              onAddToday={handleAddToday}
+              onEditMeal={handleEditMeal}
+              isLoading={isLoading}
+            />
           </div>
         )}
       </div>

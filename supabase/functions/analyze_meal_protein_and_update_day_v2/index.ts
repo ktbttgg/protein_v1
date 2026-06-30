@@ -49,6 +49,19 @@ type CoachingOut = {
   reason: string;
 };
 
+type WatchoutId =
+  | "high_fat_extras"
+  | "large_refined_carbs"
+  | "fried"
+  | "processed_meat"
+  | "high_added_sugar";
+
+type Watchout = {
+  id: WatchoutId;
+  label: string;
+  reason: string;
+};
+
 type MealLLMOutput = {
   protein_grams: number;
   confidence: "low" | "medium" | "high";
@@ -58,11 +71,233 @@ type MealLLMOutput = {
   carb_type: CarbType;
   meal_summary: string;
   coaching: CoachingOut;
+  watchouts: Watchout[];
 };
 
 function clampText(text: string, max = 220) {
   const t = (text ?? "").trim().replace(/\s+/g, " ");
   return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t;
+}
+
+const WATCHOUT_LABELS: Record<WatchoutId, string> = {
+  high_fat_extras: "High-fat extras",
+  large_refined_carbs: "Large refined carbs",
+  fried: "Fried or crumbed",
+  processed_meat: "Processed meat",
+  high_added_sugar: "High added sugar",
+};
+
+const VALID_WATCHOUT_IDS = new Set(Object.keys(WATCHOUT_LABELS));
+
+function validateWatchouts(input: unknown): Watchout[] {
+  if (!Array.isArray(input)) return [];
+
+  const seen = new Set<string>();
+  const output: Watchout[] = [];
+
+  for (const item of input) {
+    if (!item || typeof item !== "object") continue;
+
+    const raw = item as Record<string, unknown>;
+    const id = raw.id;
+
+    if (typeof id !== "string") continue;
+    if (!VALID_WATCHOUT_IDS.has(id)) continue;
+    if (seen.has(id)) continue;
+
+    seen.add(id);
+
+    output.push({
+      id: id as WatchoutId,
+      label: WATCHOUT_LABELS[id as WatchoutId],
+      reason: typeof raw.reason === "string" ? clampText(raw.reason, 120) : "",
+    });
+
+    if (output.length >= 2) break;
+  }
+
+  return output;
+}
+
+function normaliseText(text: string) {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function hasAny(text: string, words: string[]) {
+  return words.some((word) => text.includes(word));
+}
+
+function addWatchout(
+  output: Watchout[],
+  id: WatchoutId,
+  reason: string,
+) {
+  if (output.some((w) => w.id === id)) return;
+  if (output.length >= 2) return;
+
+  output.push({
+    id,
+    label: WATCHOUT_LABELS[id],
+    reason: clampText(reason, 120),
+  });
+}
+
+/**
+ * Deterministic safety net.
+ *
+ * The benchmark showed GPT recognises foods well, but does not reliably emit structured watchouts.
+ * So GPT still analyses the meal, then this function converts its own recognised text into watchouts.
+ */
+function deriveWatchoutsFromText(opts: {
+  mealSummary: string;
+  notes: string;
+  mealText?: string;
+}): Watchout[] {
+  const text = normaliseText(
+    `${opts.mealSummary ?? ""} ${opts.notes ?? ""} ${opts.mealText ?? ""}`,
+  );
+
+  const output: Watchout[] = [];
+
+  const isBalancedRiceMeal =
+    hasAny(text, ["chicken"]) &&
+    hasAny(text, ["vegetable", "vegetables", "broccoli", "carrot", "capsicum", "bell pepper"]) &&
+    hasAny(text, ["rice"]) &&
+    !hasAny(text, ["naan", "pizza", "pasta", "noodle", "chips", "fries"]);
+
+  const isSushi =
+    hasAny(text, ["sushi", "nigiri", "seaweed"]) &&
+    hasAny(text, ["salmon", "tuna", "avocado"]);
+
+  const isWholegrain =
+    hasAny(text, ["whole grain", "wholegrain", "seeded", "whole wheat", "wholemeal"]);
+
+  const hasChocolateCereal =
+    hasAny(text, ["chocolate cereal", "chocolate puffed cereal", "choc cereal"]);
+
+  const hasSugaryCereal =
+    hasAny(text, ["sugary cereal", "sweet cereal"]);
+
+  const hasCreamyPasta =
+    hasAny(text, ["creamy pasta", "creamy chicken pasta", "cream sauce", "creamy sauce", "alfredo", "carbonara"]);
+
+  const hasPasta =
+    hasAny(text, ["pasta", "spaghetti", "penne", "fettuccine", "linguine", "macaroni"]);
+
+  const hasPizza =
+    hasAny(text, ["pizza", "pizza base", "pizza crust"]);
+
+  const hasWhiteToastOrBread =
+    hasAny(text, ["white toast", "white bread", "toasted white bread"]);
+
+  const hasWhiteWrap =
+    hasAny(text, ["white flour wrap", "white wrap", "flour tortilla", "white flour tortilla", "wrap cut in half"]);
+
+  const hasInstantNoodles =
+    hasAny(text, ["instant noodles", "cup noodles", "instant noodle", "ramen noodles"]);
+
+  const hasFriesOrChips =
+    hasAny(text, ["fries", "chips", "potato chips", "fried potato chips", "thick-cut fried potato"]);
+
+  const hasRiceAndNaan =
+    hasAny(text, ["rice"]) && hasAny(text, ["naan"]);
+
+  const hasProcessedMeat =
+    hasAny(text, ["pepperoni", "salami", "sausage", "sausages", "bacon", "deli ham", "deli-style ham"]) ||
+    (hasAny(text, ["ham"]) && !hasAny(text, ["roast beef", "roast chicken"]));
+
+  const hasFried =
+    hasAny(text, ["battered", "crumbed", "deep fried", "fried fish", "fried chicken", "schnitzel"]);
+
+  const hasHighFatExtras =
+    hasCreamyPasta ||
+    hasAny(text, ["butter", "margarine", "aioli", "mayo", "mayonnaise", "buttery sauce"]) ||
+    hasAny(text, ["peanut butter", "nut butter"]) ||
+    hasAny(text, ["cheese pizza", "melted cheese"]) ||
+    hasAny(text, ["large avocado", "large amount of avocado", "large portion of avocado"]);
+
+  if (hasChocolateCereal || hasSugaryCereal) {
+    addWatchout(
+      output,
+      "high_added_sugar",
+      "Chocolate or sugary cereal can be easy to overdo while still being low in protein.",
+    );
+  }
+
+  if (hasProcessedMeat) {
+    addWatchout(
+      output,
+      "processed_meat",
+      "Processed meats like ham, sausage, salami or pepperoni can quietly add up.",
+    );
+  }
+
+  if (hasFried) {
+    addWatchout(
+      output,
+      "fried",
+      "Battered, crumbed or fried foods can add extra heaviness around the protein.",
+    );
+  }
+
+  if (
+    !isSushi &&
+    !isBalancedRiceMeal &&
+    !isWholegrain &&
+    (
+      hasPasta ||
+      hasPizza ||
+      hasWhiteToastOrBread ||
+      hasWhiteWrap ||
+      hasInstantNoodles ||
+      hasFriesOrChips ||
+      hasRiceAndNaan
+    )
+  ) {
+    addWatchout(
+      output,
+      "large_refined_carbs",
+      hasPizza
+        ? "Pizza base is the dominant refined carbohydrate."
+        : hasPasta
+          ? "Pasta is the main refined carbohydrate in this meal."
+          : hasInstantNoodles
+            ? "Instant noodles are the main refined carbohydrate in this meal."
+            : hasFriesOrChips
+              ? "Chips or fries are the main refined carbohydrate here."
+              : hasRiceAndNaan
+                ? "Rice and naan together can make the refined carbs stack up."
+                : "White bread or wraps are the main refined carbohydrate here.",
+    );
+  }
+
+  if (hasHighFatExtras) {
+    addWatchout(
+      output,
+      "high_fat_extras",
+      hasCreamyPasta
+        ? "Creamy sauce is a major part of this meal."
+        : hasAny(text, ["peanut butter", "nut butter"])
+          ? "Nut butter is useful, but it is more energy-dense than protein-dense."
+          : hasAny(text, ["butter", "margarine"])
+            ? "Butter or margarine can quietly add up on toast."
+            : "Cheese, creamy sauces or rich extras can quietly add up.",
+    );
+  }
+
+  return output.slice(0, 2);
+}
+
+function mergeWatchouts(primary: Watchout[], secondary: Watchout[]): Watchout[] {
+  const output: Watchout[] = [];
+
+  for (const item of [...primary, ...secondary]) {
+    if (output.some((w) => w.id === item.id)) continue;
+    output.push(item);
+    if (output.length >= 2) break;
+  }
+
+  return output;
 }
 
 const MEAL_COACH_PROMPT = `
@@ -124,7 +359,7 @@ NEXT TIME TWEAK RULES
   - toast: eggs, cheese, cottage cheese, smoked salmon
   - cereal: Greek yoghurt, protein milk, high-protein yoghurt
   - yoghurt bowl: increase yoghurt portion, add protein powder, use high-protein yoghurt
-  - pasta: add chicken, tuna, mince, tofu, lentils
+  - pasta: increase the meat-to-pasta ratio, add chicken, tuna, mince, tofu, or lentils if not already present
   - pizza: add a protein side or choose a protein-heavy topping
   - salad: add chicken, tuna, eggs, tofu, chickpeas
 
@@ -141,11 +376,6 @@ MEAL SUMMARY
 - Short and concrete.
 - Describe visible food rather than guessing.
 - Include visible protein source if present.
-- Good examples:
-  - "Two slices of toast with a dark spread."
-  - "Toast with avocado and sliced boiled egg."
-  - "Bowl of chocolate cereal; milk is not clearly visible."
-  - "Greek yoghurt bowl with mixed berries."
 
 NOTES
 - Say what you saw and the assumption used for protein.
@@ -169,6 +399,21 @@ carb_type:
 - mixed if there is a balance.
 - low if carbs are not dominant.
 
+WATCHOUTS
+Return a field called "watchouts".
+
+watchouts must be an array with 0, 1, or 2 items.
+
+Allowed ids:
+- high_fat_extras
+- large_refined_carbs
+- fried
+- processed_meat
+- high_added_sugar
+
+Return watchouts when obvious, but do not invent concerns.
+The server will also validate and derive watchouts from your analysis text.
+
 OUTPUT RULES
 - Return STRICT JSON ONLY.
 - No markdown.
@@ -185,6 +430,12 @@ RETURN JSON IN EXACTLY THIS SHAPE
   "fibre_risk": "low"|"medium"|"high",
   "carb_type": "low"|"mixed"|"refined_heavy",
   "meal_summary": string,
+  "watchouts": [
+    {
+      "id": "high_fat_extras"|"large_refined_carbs"|"fried"|"processed_meat"|"high_added_sugar",
+      "reason": string
+    }
+  ],
   "coaching": {
     "five_min_fix": string,
     "next_time_tweak": string,
@@ -299,6 +550,15 @@ Optional hints:
     reason: clampText(String(c?.reason ?? ""), 280),
   };
 
+  const modelWatchouts = validateWatchouts(parsed?.watchouts);
+  const derivedWatchouts = deriveWatchoutsFromText({
+    mealSummary: meal_summary,
+    notes,
+    mealText,
+  });
+
+  const watchouts = mergeWatchouts(derivedWatchouts, modelWatchouts);
+
   return {
     protein_grams: Math.round(protein),
     confidence: confOk ? confidence : "medium",
@@ -308,6 +568,7 @@ Optional hints:
     carb_type: carbOk ? carb_type : "mixed",
     meal_summary,
     coaching,
+    watchouts,
   };
 }
 
@@ -778,6 +1039,7 @@ Deno.serve(async (req: Request) => {
       },
       meal_summary: analysis.meal_summary,
       coaching,
+      watchouts: analysis.watchouts,
       daily: {
         date,
         protein_total: newTotal,
